@@ -34,6 +34,8 @@ simulateAgeComp.fn <- function(dat,yr,natage,selex,M,nAge,nAgeAdj,fleet,ageingEr
     return(dat)
 }
 
+
+
 assess.fn <- function(i,yr,cmd,convCrit,verbose=T,maxIter=3,jit=1e-5,jitMult=10) {
     #expects you to be in the proper working directory
     tmp <- shell(cmd,intern=T)
@@ -120,9 +122,6 @@ doHakeMSE.fn <- function(theDir,maxYr=2030,
     set.seed(theSeed)
     setwd(theDir)
 
-    selex <- read.table("posterior_mse.sso",header=T)
-    selex <- split(selex,selex$Fleet)
-
     if(is.null(ageingError)) {
         ageingError <- matrix(0,ncol=15,nrow=21,dimnames=list(paste("a",0:20,sep=""),paste("a",1:15,sep="")))
         diag(ageingError[2:15,]) <- 1
@@ -152,9 +151,12 @@ doHakeMSE.fn <- function(theDir,maxYr=2030,
     catch <- matrix(NA,nrow=length(sims),ncol=maxYr-2012+2,dimnames=list(as.character(sims),paste(2012:(maxYr+1))))
     catch[,as.character(2012)] <- rep(251809,length(sims))   #The set catch for 2012
 
+    #hard-wired parameter vector for random walk. Could possibly read this from control file
+    parVecs <- list(fishery=c(-1000,0,NA,NA,NA,NA,NA,0,0,0,0,0,0,0,0,0,0,0,0,0,0),survey=c(-1000,-1000,0,NA,NA,NA,NA,0,0,0,0,0,0,0,0,0,0,0,0,0,0))
+
     surveyYrs=c(2012,seq(2013,maxYr,surveyPer))
 
-    for(i in sims) {    #simulation of MCMC sample (first one is burn-in)
+    for(i in sims) {    #simulation of MCMC sample (iter=1 is burn-in)
         cat("Starting sim",i,"\n")
         flush.console()
         #create directory and copy files to it
@@ -163,8 +165,8 @@ doHakeMSE.fn <- function(theDir,maxYr=2030,
         setwd(paste("sim",i,sep=""))
         file.copy("2012_hake_data.ss","2012_hake_data.2011.ss")
         file.copy("2012_hake_control.ss","2012_hake_control.2011.ss")
-        starter <- SS_readstarter(verbose=F)
         #create starter file with the thinning starting at the current sim (to save a little time)
+        starter <- SS_readstarter(verbose=F)
         starter$MCMCthin <- i
         SS_writestarter(starter,overwrite=T,verbose=F)
         #setup forecast.ss to have no catch to get beginning of year 2012
@@ -179,19 +181,31 @@ doHakeMSE.fn <- function(theDir,maxYr=2030,
         forecastSS <- c(forecastSS,999)
         writeLines(forecastSS,"forecast.ss")
     
-        #Run mceval just to make sure that it gets proper values for beginning of year 2012
-        tmp <- shell("ss3.exe -mceval",intern=T)
-        M <- params$NatM_p_1_Fem_GP_1[params$Iter==i]
-        qSurv <- params$Q_2[params$Iter==i]
+        #Set up par file and run SS with phase=0 in starter file to get derived parameters for start of 2012
+        parFromMCMC()       #create new par file
+        setUpStarter0()     #set up starter to stop at phase 0
+        tmp <- shell("ss3.exe",intern=T)
+        getOutput such as M, qsurv, and selex. Shoudl I do this manually to save time or use r4ss
+        
+        #M <- params$NatM_p_1_Fem_GP_1[params$Iter==i]
+        #qSurv <- params$Q_2[params$Iter==i]
         #get selectivity for each fleet for this particular MCMC sample
-        s1 <- selex[[1]][selex[[1]]$mceval==i,6:26]  #fishery selex
-        s2 <- selex[[2]][selex[[2]]$mceval==i,6:26]  #survey selex
+        #selexPars <- params[params$Iter==i,]
+        #selexPars <- getSelexPars.fn(selexPars,parVecs)
+        #s1 <- randWalkSelex.fn(x$survey)
+        #s2 <- randWalkSelex.fn(x$survey)
         
         #Loop over years (start in 2012 since 2012 catch is already set, but need 2012 data)
         for(yr in assessYrs) {
             dat <- SS_readdat("2012_hake_data.ss",verbose=F)
-            natage <- read.table("posterior_natage.sso",header=T,nrows=19)  #only need the first 19 rows because we are working with only a particular sim (saves memory and time)
-            natage <- natage[natage$mceval==i & natage$Yr==yr,-(1:6)]
+
+            #natage <- read.table("posterior_natage.sso",header=T,nrows=19)  #only need the first 19 rows because we are working with only a particular sim (saves memory and time)
+            #natage <- natage[natage$mceval==i & natage$Yr==yr,-(1:6)]
+            #need to get natage from derivedposteriors file now
+            #First change control file to get correct year
+            #Run mceval to get the natage
+            #Read it from the derived posteriors file
+            
             if(nrow(natage)!=1) stop("natage not read in correctly in sim",i,"and year",yr,"\n")
             batage <- natage*wtAtAge
             if(yr %in% surveyYrs) { #Simulate new survey data for year and add to data file
@@ -246,7 +260,8 @@ doHakeMSE.fn <- function(theDir,maxYr=2030,
             forecastSS <- c(forecastSS,paste(yr,"1 1",catch[as.character(i),as.character(yr)]),999)
             writeLines(forecastSS,"forecast.ss")
             #runmceval to get next years beginning biomass
-            #make sure to use propoer data and control files, so that it reads in forecast catches
+            CHANGE CONTROL FILE TO UPDATE YEAR OF NATAGE OUTPUT
+            #make sure to use propoer data and control files, so that it reads in forecast catches and gets natage for correct year
             file.copy("2012_hake_data.2011.ss","2012_hake_data.ss",overwrite=T)
             file.copy("2012_hake_control.2011.ss","2012_hake_control.ss",overwrite=T)
             tmp <- shell("ss3.exe -mceval",intern=T)
@@ -561,6 +576,30 @@ doHakeMSE2.fn <- function(theDir,maxYr=2030,
     setwd(origWD)
 }
 
+
+getSelexPars.fn <- function(pars,parVecs) {
+    #pars is the row from the posteriors file
+    #parVecs is a list of vectors of all parameters (for random walk option 17) with NA's in location of estimated parameters
+    ### something like   list(fishery=c(-1000,0,NA,NA,NA,NA,NA,0,0,0,0,0,0,0,0,0,0,0,0,0,0),survey=c(...))
+    ind <- grep("AgeSel",names(pars))
+    pars <- pars[,ind]
+    indF <- grep("Fishery",names(pars))
+    indS <- grep("Survey",names(pars))
+    fish <- pars[,indF]
+    surv <- pars[,indS]
+    if(length(fish)!=sum(is.na(parVecs$fishery))) {stop("There was an error in getSelexPars.fn with fishery parameters.\nProbably a mis-specified parVecs.\n")}
+    if(length(surv)!=sum(is.na(parVecs$survey))) {stop("There was an error in getSelexPars.fn with survey parameters.\nProbably a mis-specified parVecs.\n")}
+    parVecs$fishery[is.na(parVecs$fishery)] <- unlist(fish)
+    parVecs$survey[is.na(parVecs$survey)] <- unlist(surv)
+    return(parVecs)        
+}
+
+posts <- read.table("C:\\NOAA2014\\Hake\\MSE\\Test\\posteriors.sso",header=T)
+pars <- posts[1,]
+parVecs <- list(fishery=c(-1000,0,NA,NA,NA,NA,NA,0,0,0,0,0,0,0,0,0,0,0,0,0,0),survey=c(-1000,-1000,0,NA,NA,NA,NA,0,0,0,0,0,0,0,0,0,0,0,0,0,0))
+x <- getSelexPars.fn(pars,parVecs)
+randWalkSelex.fn(x$survey)
+
 randWalkSelex.fn <- function(pars) {
     #calculates the selectivity from the random walk parameters in SS (option 17)
     #-1000 means to set equal to 0
@@ -576,8 +615,8 @@ randWalkSelex.fn <- function(pars) {
     return(selex)
 }
 
-randWalkSelex.fn(c(-1000,-1000,0,0.295698,0.170968,-0.441426,0.564627,0,0,0,0,0,0,0))
-randWalkSelex.fn(c(-1000,-1000,0,-0.0605365,0.141217,0.474321,-0.00714344,0,0,0,0,0,0,0))
+#randWalkSelex.fn(c(-1000,-1000,0,0.295698,0.170968,-0.441426,0.564627,0,0,0,0,0,0,0))
+#randWalkSelex.fn(c(-1000,-1000,0,-0.0605365,0.141217,0.474321,-0.00714344,0,0,0,0,0,0,0))
 
 
 randWalkSelexPars.fn <- function(selex) {
@@ -592,6 +631,27 @@ randWalkSelexPars.fn <- function(selex) {
     return(p)
 }
 
-0   0.554401    0.74515 0.884086    0.568572    1   1   1   1   1   1.00E+00    1   1.00E+00    1.00E+00    1
+#0   0.554401    0.74515 0.884086    0.568572    1   1   1   1   1   1.00E+00    1   1.00E+00    1.00E+00    1
 
-0   0.574071    0.54035 0.622307    1   0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882
+#0   0.574071    0.54035 0.622307    1   0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882    0.992882
+
+
+writeCtlFileForNatAge.fn <- function(ctlName,year) {
+    #writes end of control file (extra SD output) to get specific year of natage
+    ctl <- readLines(ctlName)
+    ind <- grep("NatAge_area",ctl)
+    x <- strsplit(ctl[ind]," ")
+    x[2] <- year
+    ctl[ind] <- paste(x[[1]],collapse=" ")
+    
+
+    ctl[ind] <- paste(x+1,"# End year standard recruitment devs")
+    ind <- grep("Last year for full bias correction in_MPD",ctl)
+    x <- as.numeric(strsplit(ctl[ind],"#")[[1]][1])
+    ctl[ind] <- paste(x+1,"# Last year for full bias correction in_MPD",sep="\t")
+    ind <- grep("First_recent_yr_nobias_adj_in_MPD",ctl)
+    x <- as.numeric(strsplit(ctl[ind],"#")[[1]][1])
+    ctl[ind] <- paste(x+1,"# First_recent_yr_nobias_adj_in_MPD",sep="\t")
+    
+    writeLines(ctl,"2012_hake_control.ss")
+}
